@@ -1,0 +1,75 @@
+name: run
+
+on:
+  workflow_dispatch:
+    inputs:
+      ep_id:
+        description: "Episode ID"
+        required: true
+        default: "T01_EP001_A1"
+      tab:
+        description: "Sheet Tab"
+        required: false
+        default: "1_Broadcast_Schedule"
+      row_id:
+        description: "Row ID"
+        required: false
+        default: "1"
+      promote_to_root:
+        description: "Promote clean final.mp4 to Root folder"
+        required: false
+        default: "false"
+      force:
+        description: "Force re-mastering"
+        required: false
+        default: "false"
+  repository_dispatch:
+    types: [run]
+
+jobs:
+  mpeg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EP_ID: ${{ github.event.inputs.ep_id || github.event.client_payload.ep_id || 'T01_EP001_A1' }}
+      TAB: ${{ github.event.inputs.tab || github.event.client_payload.tab || '1_Broadcast_Schedule' }}
+      ROW_ID: ${{ github.event.inputs.row_id || github.event.client_payload.row_id || '1' }}
+      PROMOTE_TO_ROOT: ${{ github.event.inputs.promote_to_root || github.event.client_payload.promote_to_root || 'false' }}
+      FORCE: ${{ github.event.inputs.force || github.event.client_payload.force || 'false' }}
+      GDRIVE_PRODUCTION_FOLDER_ID: ${{ secrets.GDRIVE_PRODUCTION_FOLDER_ID }}
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg & rclone
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y ffmpeg rclone
+          python3 -m pip install --upgrade pip pillow numpy opencv-python-headless requests google-auth
+
+      - name: Configure ephemeral rclone in RAM
+        env:
+          RCLONE_CONF_B64: ${{ secrets.GDRIVE_RCLONE_CONF }}
+          SA_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p ~/.config/rclone /dev/shm/mpeg
+          if [ -n "$RCLONE_CONF_B64" ]; then
+            echo "$RCLONE_CONF_B64" | base64 -d > ~/.config/rclone/rclone.conf 2>/dev/null || echo "$RCLONE_CONF_B64" > ~/.config/rclone/rclone.conf
+          fi
+          if [ -n "$SA_JSON" ]; then
+            echo "$SA_JSON" > /dev/shm/mpeg/sa.json
+            echo "GOOGLE_APPLICATION_CREDENTIALS=/dev/shm/mpeg/sa.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run step-by-step checkpointed FFmpeg mastering
+        run: |
+          ARGS="--ep-id ${EP_ID}"
+          if [ "${PROMOTE_TO_ROOT}" = "true" ]; then ARGS="${ARGS} --promote-to-root"; fi
+          if [ "${FORCE}" = "true" ]; then ARGS="${ARGS} --force"; fi
+          python3 runner.py ${ARGS}
